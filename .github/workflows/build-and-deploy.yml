@@ -5,7 +5,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: write        # let the action push gh‑pages
+  contents: write            # allow push to gh‑pages
 
 jobs:
   build:
@@ -18,14 +18,18 @@ jobs:
       with:
         python-version: '3.11'
 
-    - name: install *latest* pygbag
-      # ↑ pulls straight from the repo’s main branch
+    - name: install latest pygbag
+      # From PyPI is fine; no need for the git version here
       run: |
         python -m pip install --upgrade pip
-        pip install git+https://github.com/pygame-web/pygbag.git
+        pip install pygbag
 
     - name: build web bundle
-      run: pygbag --build --ume_block 0 main.py
+      run: |
+        pygbag --build \
+               --ume_block 0 \
+               --title "Jovian Front" \
+               main.py
 
     - name: deploy to pages
       uses: peaceiris/actions-gh-pages@v4
