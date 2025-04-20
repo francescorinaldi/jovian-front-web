@@ -1,2 +1,2 @@
-pygbag          # only needed for the web build
-pygame          # needed for local runs
+# local desktop run‑time deps
+pygame>=2.6
