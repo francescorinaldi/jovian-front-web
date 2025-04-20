@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: write      # allow the action to push to gh-pages
+  pages: write         # (not strictly needed for this action, but nice to have)
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -22,10 +26,10 @@ jobs:
 
     - name: build web bundle
       run: |
-        pygbag --build main.py           # <— no --out
+        pygbag --build main.py           
 
     - name: deploy to pages
       uses: peaceiris/actions-gh-pages@v4
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
-        publish_dir: build/web           # <— new path
+        publish_dir: build/web           
