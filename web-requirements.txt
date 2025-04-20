@@ -1,0 +1,3 @@
+# everything required to produce the WASM bundle
+pygame>=2.6
+pygbag     # pulls the loader, compiler, SDL2 WASM libs, etc.
