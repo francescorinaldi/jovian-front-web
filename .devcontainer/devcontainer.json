@@ -1,56 +1,17 @@
 {
-  // ------------------------------------------------------------------
-  //  Basic image: Microsoft’s official Python 3.11 container
-  // ------------------------------------------------------------------
-  "image": "mcr.microsoft.com/devcontainers/python:0-3.11",
-
-  // ------------------------------------------------------------------
-  //  Features (optional): add common CLIs without extra Dockerfile
-  //  docs: https://github.com/devcontainers/features
-  // ------------------------------------------------------------------
-  "features": {
-    "ghcr.io/devcontainers/features/git-lfs:1": {},
-    "ghcr.io/devcontainers/features/poetry:1": {
-      "version": "latest"
-    }
-  },
-
-  // ------------------------------------------------------------------
-  //  Workspace settings
-  // ------------------------------------------------------------------
-  "workspaceFolder": "/workspaces/jovian-front-web",
+  "name": "React Dev",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:20",
+  "forwardPorts": [5173],
+  "postCreateCommand": "npm install",
   "customizations": {
     "vscode": {
-      // Recommended VS Code extensions when the container opens
-      "extensions": [
-        "ms-python.python",
-        "ms-python.vscode-pylance",
-        "ms-azuretools.vscode-docker",
-        "esbenp.prettier-vscode"
-      ],
-      // Default formatter for *.py
       "settings": {
-        "editor.defaultFormatter": "ms-python.black-formatter",
-        "python.defaultInterpreterPath": "/usr/local/bin/python",
-        "python.formatting.provider": "black",
-        "python.linting.mypyEnabled": true,
-        "python.linting.pylintEnabled": false
-      }
+        "editor.formatOnSave": true
+      },
+      "extensions": [
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode"
+      ]
     }
-  },
-
-  // ------------------------------------------------------------------
-  //  Post‑create: install dev dependencies & pre‑commit hooks
-  // ------------------------------------------------------------------
-  "postCreateCommand": "pip install -r dev-requirements.txt && pre-commit install || true",
-
-  // ------------------------------------------------------------------
-  //  Forward common ports (none needed for Pygame, but handy for tests)
-  // ------------------------------------------------------------------
-  "ports": [],
-
-  // ------------------------------------------------------------------
-  //  Run your app with: Dev Containers: Open in Container → F5 (debug)
-  // ------------------------------------------------------------------
-  "remoteUser": "vscode"
+  }
 }
