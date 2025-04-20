@@ -1,1 +1,2 @@
-pygbag
+pygbag          # only needed for the web build
+pygame          # needed for local runs
