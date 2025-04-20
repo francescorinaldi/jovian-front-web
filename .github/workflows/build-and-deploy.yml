@@ -26,7 +26,7 @@ jobs:
 
     - name: build web bundle
       run: |
-        pygbag --build main.py           
+        pygbag --build --autorun --title "Jovian Front" main.py
 
     - name: deploy to pages
       uses: peaceiris/actions-gh-pages@v4
