@@ -1,0 +1,4 @@
+-r web-requirements.txt   # pull the web deps
+mypy==1.*                 # static checks
+black==24.*               # formatter
+pytest>=8                 # unit tests
