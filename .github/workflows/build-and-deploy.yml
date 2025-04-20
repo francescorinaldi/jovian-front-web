@@ -1,0 +1,32 @@
+name: build & deploy pygbag → GitHub Pages
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: checkout code
+      uses: actions/checkout@v4
+
+    - name: set up python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: install pygbag
+      run: |
+        python -m pip install --upgrade pip
+        pip install pygbag
+
+    - name: build web bundle
+      run: |
+        mkdir dist
+        pygbag --build --out dist main.py
+
+    - name: deploy to pages
+      uses: peaceiris/actions-gh-pages@v4
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: dist
