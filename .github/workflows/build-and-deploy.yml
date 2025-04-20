@@ -1,3 +1,4 @@
+# .github/workflows/build-and-deploy.yml
 name: build & deploy pygbag → GitHub Pages
 on:
   push:
@@ -7,8 +8,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    - name: checkout code
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v4
 
     - name: set up python
       uses: actions/setup-python@v5
@@ -22,11 +22,10 @@ jobs:
 
     - name: build web bundle
       run: |
-        mkdir dist
-        pygbag --build --out dist main.py
+        pygbag --build main.py           # <— no --out
 
     - name: deploy to pages
       uses: peaceiris/actions-gh-pages@v4
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
-        publish_dir: dist
+        publish_dir: build/web           # <— new path
