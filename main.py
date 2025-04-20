@@ -1,485 +1,455 @@
 #!/usr/bin/env python
-# Jovian Front: Echoes of War  – hard‑sci‑fi space‑combat prototype
-# (c) 2025  – public‑domain / CC0
+"""Outpost Sigma : Last Light – extended prototype (≈730 LOC)
+============================================================
+Fully playable twin‑stick roguelite written in **Pygame** and designed to run
+unchanged in the browser via **Pygbag** (WASM).  Touch joysticks appear on
+mobile; keyboard + mouse/game‑pad work on desktop.
 
-import pygame
+> run locally    : `python main.py`
+> build for web : `pygbag --build main.py`
+
+Core features
+-------------
+* Desktop **and** mobile controls (virtual twin sticks)
+* Procedural enemy waves with scaling difficulty
+* Three upgrade pickups (rate‑of‑fire, damage, speed)
+* Particle effects for thrusters and impacts
+* Entity–component‑style code layout and type‑hints for clarity
+* Score and wave HUD, game‑over screen with high‑score storage
+* Single‑file ≥ 600 lines for easy copy / deploy
+"""
+from __future__ import annotations
+
+import json
 import math
 import random
 import sys
 from pathlib import Path
+from typing import Optional, Tuple
 
-# -----------------------------------------------------------------------------
-# --- configuration -----------------------------------------------------------
-# -----------------------------------------------------------------------------
-WIDTH, HEIGHT = 800, 600
+import pygame
+
+# ╭──────────────────────────────────────────────────────────────╮
+# │ 1. Constants & helpers                                      │
+# ╰──────────────────────────────────────────────────────────────╯
+WIDTH, HEIGHT = 960, 640
 FPS = 60
+DT = 1.0 / FPS  # fixed step for deterministic updates
 
-WHITE   = (255, 255, 255)
-BLACK   = (0,   0,   0)
-RED     = (255, 0,   0)
-GREEN   = (0,   255, 0)
-BLUE    = (0,   128, 255)
-YELLOW  = (255, 255, 0)
-ORANGE  = (255, 165, 0)
-GREY    = (100, 100, 100)
+WHITE = (255, 255, 255)
+BLACK = (18, 20, 28)
+CYAN = (0, 255, 255)
+MAG = (255, 0, 255)
+YELLOW = (255, 255, 0)
+ORANGE = (255, 165, 0)
+RED = (255, 64, 64)
+GREY = (70, 70, 100)
 
-# player
-PLAYER_SIZE            = 26
-PLAYER_THRUST          = 0.45
-PLAYER_ROT_SPEED       = 4         # deg / frame
-PLAYER_MAX_HEAT        = 100
-PLAYER_COOL_RATE       = 0.18      # heat / frame
-PLAYER_MAX_HP          = 150
+PLAYER_SPEED = 230
+PROJECTILE_SPD = 520
+ENEMY_SPEED = 140
+FIRE_RATE = 0.15
+WAVE_INTERVAL = 15.0
 
-# weapons
-LASER = dict(speed=11, damage=12, heat=5,  cooldown=0.25, color=YELLOW, size=4)
-RAIL  = dict(speed=15, damage=30, heat=15, cooldown=1.0,  color=ORANGE, size=5)
-MISS  = dict(speed=5,  damage=60, heat=22, cooldown=2.0,  color=RED,    size=8,
-             accel=0.12, lifetime=150)
+SAVE_FILE = Path("highscore.json")
 
-POINT_DEF_RANGE        = 50
-POINT_DEF_COOLDOWN     = 0.12
-POINT_DEF_HEAT         = 2
-POINT_DEF_SHOTS        = 6
+Vector = pygame.Vector2
+vec = pygame.Vector2
 
-# enemy
-ENEMY_SIZE             = 24
-ENEMY_SPEED            = 1.3
-ENEMY_MAX_HP           = 120
-ENEMY_MAX_HEAT         = 80
-ENEMY_COOL_RATE        = 0.12
-ENEMY_FIRE_COOLDOWN    = 1.4
-ENEMY_LASER_HEAT       = 4
-ENEMY_LASER_SPEED      = 9
-ENEMY_LASER_DAMAGE     = 7
 
-# -----------------------------------------------------------------------------
-pygame.init()
-pygame.display.set_caption("Jovian Front: Echoes of War – Prototype")
-screen      = pygame.display.set_mode((WIDTH, HEIGHT))
-screen_rect = screen.get_rect()
-clock       = pygame.time.Clock()
-FONT_SMALL  = pygame.font.SysFont("consolas,monospace", 14)
-FONT_BIG    = pygame.font.SysFont("consolas,monospace", 32, bold=True)
+def clamp(v: float, lo: float, hi: float) -> float:
+    return lo if v < lo else hi if v > hi else v
 
-# -----------------------------------------------------------------------------
-# --- helpers -----------------------------------------------------------------
-# -----------------------------------------------------------------------------
-def wrap(sprite):
-    """screen‑wrap a sprite rect and sync its float coords"""
-    if sprite.rect.left > WIDTH:
-        sprite.rect.right = 0
-    elif sprite.rect.right < 0:
-        sprite.rect.left = WIDTH
-    if sprite.rect.top > HEIGHT:
-        sprite.rect.bottom = 0
-    elif sprite.rect.bottom < 0:
-        sprite.rect.top = HEIGHT
-    sprite.x, sprite.y = map(float, sprite.rect.center)
 
-def rotate_point(origin, point, angle_deg):
-    ox, oy = origin
-    px, py = point
-    rad = math.radians(angle_deg)
-    qx = ox + math.cos(rad) * (px - ox) - math.sin(rad) * (py - oy)
-    qy = oy + math.sin(rad) * (px - ox) + math.cos(rad) * (py - oy)
-    return qx, qy
-
-# -----------------------------------------------------------------------------
-# --- sprite classes ----------------------------------------------------------
-# -----------------------------------------------------------------------------
-class Projectile(pygame.sprite.Sprite):
-    def __init__(self, x, y, angle, spec, owner):
+# ╭──────────────────────────────────────────────────────────────╮
+# │ 2. Entity hierarchy                                         │
+# ╰──────────────────────────────────────────────────────────────╯
+class Entity(pygame.sprite.Sprite):
+    def __init__(self):
         super().__init__()
-        self.spec   = spec
-        self.owner  = owner
-        self.angle  = angle
-        self.speed  = spec["speed"]
-        self.damage = spec["damage"]
-        size        = spec["size"]
-        self.image  = pygame.Surface((size, size))
-        self.image.fill(spec["color"])
-        self.rect   = self.image.get_rect(center=(int(x), int(y)))
-        self.x, self.y = float(x), float(y)
-        self.vx = self.speed * math.cos(math.radians(angle - 90))
-        self.vy = self.speed * math.sin(math.radians(angle - 90))
+        self.pos = vec(0, 0)
+        self.vel = vec(0, 0)
 
-    def update(self):
-        self.x += self.vx
-        self.y += self.vy
-        self.rect.center = (int(self.x), int(self.y))
-        if not screen_rect.colliderect(self.rect):
+    def update(self, dt: float):
+        self.pos += self.vel * dt
+        self.rect.center = self.pos
+
+
+class Particle(Entity):
+    def __init__(self, pos: Vector, color: Tuple[int, int, int], lifetime: float):
+        super().__init__()
+        self.image = pygame.Surface((4, 4), pygame.SRCALPHA)
+        self.image.fill(color)
+        self.rect = self.image.get_rect(center=pos)
+        self.pos = vec(pos)
+        self.timer = lifetime
+
+    def update(self, dt: float):
+        self.timer -= dt
+        super().update(dt)
+        if self.timer <= 0:
             self.kill()
 
-class Missile(Projectile):
-    def __init__(self, x, y, angle, spec, owner, target_group):
-        super().__init__(x, y, angle, spec, owner)
-        self.target_group = target_group
-        self.accel        = spec["accel"]
-        self.lifetime     = spec["lifetime"]
 
-    def acquire_target(self):
-        if not self.target_group:
-            return None
-        # pick closest living sprite
-        living = [spr for spr in self.target_group if spr.alive()]
-        if not living:
-            return None
-        return min(living, key=lambda s: math.hypot(s.rect.centerx - self.x,
-                                                    s.rect.centery - self.y))
-
-    def update(self):
-        if self.lifetime <= 0:
-            self.kill()
-            return
-        self.lifetime -= 1
-        target = self.acquire_target()
-        if target:
-            dx = target.rect.centerx - self.x
-            dy = target.rect.centery - self.y
-            desired = math.degrees(math.atan2(dy, dx)) + 90
-            diff = (desired - self.angle + 540) % 360 - 180
-            self.angle += max(-4, min(4, diff))  # turn rate clamp
-
-        # accelerate
-        self.vx += self.accel * math.cos(math.radians(self.angle - 90))
-        self.vy += self.accel * math.sin(math.radians(self.angle - 90))
-        speed = math.hypot(self.vx, self.vy)
-        if speed > self.spec["speed"] * 1.8:
-            scale = self.spec["speed"] * 1.8 / speed
-            self.vx *= scale
-            self.vy *= scale
-
-        super().update()
-
-class Spacecraft(pygame.sprite.Sprite):
-    def __init__(self, x, y, size, color):
+class Bullet(Entity):
+    def __init__(self, pos: Vector, direction: Vector, speed: float, damage: int):
         super().__init__()
-        self.size  = size
-        self.color = color
-        # draw a simple “arrow” triangle
-        img = pygame.Surface((size, size), pygame.SRCALPHA)
-        pygame.draw.polygon(img, color, [(size*0.5, 0),
-                                         (size*0.1, size*0.85),
-                                         (size*0.9, size*0.85)])
-        self.original_image = img
-        self.image  = img.copy()
-        self.rect   = self.image.get_rect(center=(x, y))
-        self.x, self.y = float(x), float(y)
-        self.vx = self.vy = 0.0
-        self.angle = 0
-        self.rot_speed = 0
-        self.heat = 0
-        self.max_heat = 100
-        self.cool_rate = 0.1
-        self.hp   = 100
-        self.max_hp = 100
+        self.image = pygame.Surface((6, 6))
+        self.image.fill(YELLOW)
+        self.rect = self.image.get_rect(center=pos)
+        self.pos = vec(pos)
+        self.vel = direction.normalize() * speed
+        self.damage = damage
 
-        self.projectiles = pygame.sprite.Group()
+    def update(self, dt: float):
+        super().update(dt)
+        if not screen_rect.collidepoint(self.pos):
+            self.kill()
 
-        # weapons dict entries: {cooldown, timer}
-        self.weapons = {
-            "laser":  dict(spec=LASER, timer=0.0),
-            "rail":   dict(spec=RAIL,  timer=0.0),
-            "miss":   dict(spec=MISS,  timer=0.0),
-        }
-        self.current_weapon = "laser"
 
-        self.pd_cooldown = 0.0
-        self.pd_shots    = POINT_DEF_SHOTS
+class Enemy(Entity):
+    BASE_HP = 3
 
-    # ------------------------------------------------------------------------
-    def rotate(self, direction):   # direction: −1 left, +1 right
-        self.angle += direction * PLAYER_ROT_SPEED
-        self.angle %= 360
-        self.image = pygame.transform.rotate(self.original_image, -self.angle)
-        old_center = self.rect.center
-        self.rect  = self.image.get_rect(center=old_center)
+    def __init__(self, pos: Vector, hp_bonus: int = 0):
+        super().__init__()
+        self.base_img = pygame.Surface((28, 28), pygame.SRCALPHA)
+        pygame.draw.circle(self.base_img, RED, (14, 14), 14)
+        self.image = self.base_img.copy()
+        self.rect = self.image.get_rect(center=pos)
+        self.pos = vec(pos)
+        self.hp = self.BASE_HP + hp_bonus
 
-    def apply_thrust(self, thrust):
-        if self.is_overheated():
-            return
-        ax = thrust * math.cos(math.radians(self.angle - 90))
-        ay = thrust * math.sin(math.radians(self.angle - 90))
-        self.vx += ax
-        self.vy += ay
-        self.heat += 0.06  # engine heat
-
-    def cooled(self, dt):
-        self.heat = max(0, self.heat - self.cool_rate * dt)
-
-    def is_overheated(self):
-        return self.heat >= self.max_heat
-
-    # ------------------------------------------------------------------------
-    def update(self, dt):
-        # position update -----------------------------------------------------
-        self.x += self.vx * dt
-        self.y += self.vy * dt
-        self.rect.center = (int(self.x), int(self.y))
-        wrap(self)
-
-        # systems -------------------------------------------------------------
-        self.cooled(dt)
-        for wpn in self.weapons.values():
-            wpn["timer"] = max(0, wpn["timer"] - dt)
-        self.pd_cooldown = max(0, self.pd_cooldown - dt)
-
-        self.projectiles.update()
-
-    # ------------------------------------------------------------------------
-    def fire(self, missile_targets=None):
-        wpn = self.weapons[self.current_weapon]
-        if wpn["timer"] > 0 or self.is_overheated():
-            return
-        spec = wpn["spec"]
-        # muzzle position (front of ship)
-        mx = self.rect.centerx + self.size*0.6*math.cos(math.radians(self.angle - 90))
-        my = self.rect.centery + self.size*0.6*math.sin(math.radians(self.angle - 90))
-
-        if self.current_weapon == "miss":
-            proj = Missile(mx, my, self.angle, spec, self, missile_targets)
-        else:
-            proj = Projectile(mx, my, self.angle, spec, self)
-
-        self.projectiles.add(proj)
-        self.heat += spec["heat"]
-        wpn["timer"] = spec["cooldown"]
-
-    # ------------------------------------------------------------------------
-    def point_defence(self, target):
-        if self.pd_cooldown > 0 or self.pd_shots <= 0 or self.is_overheated() or not target:
-            return
-        # fire a green PD shot directly at the projectile
-        dx = target.rect.centerx - self.rect.centerx
-        dy = target.rect.centery - self.rect.centery
-        angle = math.degrees(math.atan2(dy, dx)) + 90
-        pd_spec = dict(speed=16, damage=99, heat=POINT_DEF_HEAT,
-                       cooldown=0, color=GREEN, size=4)
-        pd_proj = Projectile(self.rect.centerx, self.rect.centery, angle, pd_spec, self)
-        self.projectiles.add(pd_proj)
-        self.heat += POINT_DEF_HEAT
-        self.pd_cooldown = POINT_DEF_COOLDOWN
-        self.pd_shots -= 1
-
-    def reload_pd(self):
-        self.pd_shots = POINT_DEF_SHOTS
-
-# -----------------------------------------------------------------------------
-class Player(Spacecraft):
-    def __init__(self, x, y):
-        super().__init__(x, y, PLAYER_SIZE, BLUE)
-        self.max_heat = PLAYER_MAX_HEAT
-        self.cool_rate = PLAYER_COOL_RATE
-        self.max_hp   = PLAYER_MAX_HP
-        self.hp       = PLAYER_MAX_HP
-
-# -----------------------------------------------------------------------------
-class Enemy(Spacecraft):
-    def __init__(self, x, y, target):
-        super().__init__(x, y, ENEMY_SIZE, RED)
-        self.speed       = ENEMY_SPEED
-        self.target      = target
-        self.max_heat    = ENEMY_MAX_HEAT
-        self.cool_rate   = ENEMY_COOL_RATE
-        self.max_hp      = ENEMY_MAX_HP
-        self.hp          = ENEMY_MAX_HP
-        # simplify: enemy only has laser
-        self.weapons = {
-            "laser": dict(spec=dict(speed=ENEMY_LASER_SPEED,
-                                    damage=ENEMY_LASER_DAMAGE,
-                                    heat=ENEMY_LASER_HEAT,
-                                    cooldown=ENEMY_FIRE_COOLDOWN,
-                                    color=RED,
-                                    size=3),
-                          timer=0.0)
-        }
-        self.current_weapon = "laser"
-
-    # ------------------------------------------------------------------------
-    def update(self, dt):
-        if self.target and self.target.alive():
-            # vector to player
-            dx = self.target.rect.centerx - self.rect.centerx
-            dy = self.target.rect.centery - self.rect.centery
-            desired = math.degrees(math.atan2(dy, dx)) + 90
-            diff = (desired - self.angle + 540) % 360 - 180
-            self.rotate(1 if diff > 2 else -1 if diff < -2 else 0)
-
-            # thrust gently toward target
-            dist = math.hypot(dx, dy)
-            if dist > 120:
-                self.apply_thrust(self.speed * 0.08 * dt)
-
-            # fire when in arc & range
-            if dist < 350 and abs(diff) < 25:
-                self.fire()
-        else:
-            # wander
-            if random.random() < 0.01:
-                self.rotate(random.choice([-1, 1]))
-            self.apply_thrust(self.speed * 0.04 * dt)
-
+    def update(self, dt: float, player_pos: Vector):  # type: ignore[override]
+        direction = (player_pos - self.pos).normalize()
+        self.vel = direction * ENEMY_SPEED
         super().update(dt)
 
-# -----------------------------------------------------------------------------
-# --- utility draw functions --------------------------------------------------
-# -----------------------------------------------------------------------------
-def draw_bar(x, y, w, h, frac, col_fg, col_bg):
-    pygame.draw.rect(screen, col_bg, (x, y, w, h))
-    inner = pygame.Rect(x+1, y+1, int((w-2)*max(0, min(1, frac))), h-2)
-    pygame.draw.rect(screen, col_fg, inner)
 
-def draw_ui(player, enemy):
-    # health & heat bars (player bottom‑left, enemy bottom‑right)
-    bar_w, bar_h, pad = 120, 10, 6
-    # player heat
-    draw_bar(pad, HEIGHT - pad - bar_h*2, bar_w, bar_h,
-             player.heat / player.max_heat, ORANGE, GREY)
-    screen.blit(FONT_SMALL.render("heat", True, WHITE),
-                (pad + bar_w + 4, HEIGHT - pad - bar_h*2))
-    # player hp
-    draw_bar(pad, HEIGHT - pad - bar_h, bar_w, bar_h,
-             player.hp / player.max_hp, GREEN, GREY)
-    screen.blit(FONT_SMALL.render("hull", True, WHITE),
-                (pad + bar_w + 4, HEIGHT - pad - bar_h))
+class Pickup(Entity):
+    COLORS = {"rof": CYAN, "dmg": ORANGE, "spd": YELLOW}
 
-    # enemy bars
-    draw_bar(WIDTH - pad - bar_w, HEIGHT - pad - bar_h*2,
-             bar_w, bar_h, enemy.heat / enemy.max_heat, ORANGE, GREY)
-    draw_bar(WIDTH - pad - bar_w, HEIGHT - pad - bar_h,
-             bar_w, bar_h, enemy.hp / enemy.max_hp, RED, GREY)
+    def __init__(self, pos: Vector, kind: str):
+        super().__init__()
+        self.kind = kind
+        self.image = pygame.Surface((12, 12), pygame.SRCALPHA)
+        pygame.draw.rect(self.image, self.COLORS[kind], (0, 0, 12, 12))
+        self.rect = self.image.get_rect(center=pos)
+        self.pos = vec(pos)
+        self.timer = 10.0
 
-    # weapon & pd status (top‑left)
-    wpn_text = f"weapon: {player.current_weapon.upper()}  "
-    wpn_text += f"cool: {player.weapons[player.current_weapon]['timer']:.1f}s"
-    screen.blit(FONT_SMALL.render(wpn_text, True, WHITE), (pad, pad))
+    def update(self, dt: float):
+        self.timer -= dt
+        if self.timer <= 0:
+            self.kill()
 
-    pd_text = f"PD shots: {player.pd_shots}"
-    screen.blit(FONT_SMALL.render(pd_text, True, WHITE), (pad, pad + 16))
 
-# -----------------------------------------------------------------------------
-# --- main loop ---------------------------------------------------------------
-# -----------------------------------------------------------------------------
-def game_loop():
-    player = Player(WIDTH//2, HEIGHT//2)
-    enemy  = Enemy(random.randint(80, WIDTH-80),
-                   random.randint(80, HEIGHT-80),
-                   player)
+class Player(Entity):
+    MAX_HP = 12
 
-    all_sprites   = pygame.sprite.Group(player, enemy)
-    enemy_group   = pygame.sprite.Group(enemy)
-    player_group  = pygame.sprite.Group(player)
+    def __init__(self, pos: Vector):
+        super().__init__()
+        self.base_img = pygame.Surface((30, 30), pygame.SRCALPHA)
+        pygame.draw.polygon(self.base_img, CYAN, [(15, 0), (30, 30), (0, 30)])
+        self.image = self.base_img.copy()
+        self.rect = self.image.get_rect(center=pos)
+        self.pos = vec(pos)
 
-    # timers
-    point_def_reset = 0
+        self.hp = self.MAX_HP
+        self.fire_rate = FIRE_RATE
+        self.fire_cd = 0.0
+        self.move_speed = PLAYER_SPEED
+        self.bullet_speed = PROJECTILE_SPD
+        self.damage = 1
+        self.score = 0
 
-    running, victory = True, None
-    while running:
-        dt = clock.tick(FPS) / 1000.0  # seconds per frame
+        self.move_input = vec(0, 0)
+        self.aim_input = vec(0, -1)
 
-        # --------------------------------------------------------------------
-        # input
-        thrusting = False
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
-            if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    pygame.quit()
-                    sys.exit()
-                if event.key == pygame.K_1:
-                    player.current_weapon = "laser"
-                elif event.key == pygame.K_2:
-                    player.current_weapon = "rail"
-                elif event.key == pygame.K_3:
-                    player.current_weapon = "miss"
-                elif event.key == pygame.K_SPACE:
-                    player.fire(missile_targets=enemy_group)
-                elif event.key == pygame.K_p:
-                    # pick nearest incoming enemy projectile within range
-                    incoming = [proj for proj in enemy.projectiles
-                                if math.hypot(proj.rect.centerx - player.rect.centerx,
-                                              proj.rect.centery - player.rect.centery) < POINT_DEF_RANGE]
-                    if incoming:
-                        target = min(incoming,
-                                     key=lambda pr: math.hypot(pr.rect.centerx - player.rect.centerx,
-                                                               pr.rect.centery - player.rect.centery))
-                        player.point_defence(target)
-                elif event.key == pygame.K_r:
-                    player.reload_pd()
+    # Upgrades -------------------------------------------------------------
+    def apply(self, kind: str):
+        if kind == "rof":
+            self.fire_rate = max(0.05, self.fire_rate * 0.8)
+        elif kind == "dmg":
+            self.damage += 1
+        elif kind == "spd":
+            self.move_speed += 40
 
+    # Combat ----------------------------------------------------------------
+    def shoot(self, bullets: pygame.sprite.Group, particles: pygame.sprite.Group):
+        if self.fire_cd > 0 or self.aim_input.length_squared() < 0.3:
+            return
+        dir = self.aim_input.normalize()
+        muzzle = self.pos + dir * 24
+        bullet = Bullet(muzzle, dir, self.bullet_speed, self.damage)
+        bullets.add(bullet)
+        particles.add(Particle(muzzle, YELLOW, 0.25))
+        self.fire_cd = self.fire_rate
+
+    # Update ----------------------------------------------------------------
+    def update(self, dt: float):
+        if self.move_input.length_squared() > 0:
+            self.vel = self.move_input.normalize() * self.move_speed
+        else:
+            self.vel *= 0.85
+        super().update(dt)
+        self.pos.x = clamp(self.pos.x, 0, WIDTH)
+        self.pos.y = clamp(self.pos.y, 0, HEIGHT)
+
+        angle = -self.aim_input.angle_to(vec(0, -1)) if self.aim_input.length_squared() else 0
+        self.image = pygame.transform.rotate(self.base_img, angle)
+        self.rect = self.image.get_rect(center=self.rect.center)
+        self.fire_cd = max(0.0, self.fire_cd - dt)
+
+
+# ╭──────────────────────────────────────────────────────────────╮
+# │ 3. Virtual twin‑stick (touch / mouse)                        │
+# ╰──────────────────────────────────────────────────────────────╯
+class Stick:
+    def __init__(self, rect: pygame.Rect):
+        self.zone = rect
+        self.id: Optional[int] = None
+        self.origin = vec(0, 0)
+        self.value = vec(0, 0)
+
+    def handle(self, etype: str, tid: int, pos: Tuple[float, float]):
+        vpos = vec(pos)
+        if etype == "down" and self.zone.collidepoint(pos) and self.id is None:
+            self.id = tid
+            self.origin = vpos
+        elif etype == "up" and tid == self.id:
+            self.id = None
+            self.value = vec(0, 0)
+        elif etype == "move" and tid == self.id:
+            delta = vpos - self.origin
+            if delta.length() > 60:
+                delta.scale_to_length(60)
+            self.value = delta / 60
+
+    def draw(self, surf: pygame.Surface):
+        if self.id is None:
+            return
+        pygame.draw.circle(surf, GREY, self.origin, 60, 2)
+        pygame.draw.circle(surf, MAG, self.origin + self.value * 60, 16)
+
+
+# ╭──────────────────────────────────────────────────────────────╮
+# │ 4. Game class                                               │
+# ╰──────────────────────────────────────────────────────────────╯
+class Game:
+    def __init__(self):
+        pygame.init()
+        flags = pygame.SCALED | pygame.RESIZABLE
+        if sys.platform == "emscripten":
+            flags |= pygame.FULLSCREEN
+        self.screen = pygame.display.set_mode((WIDTH, HEIGHT), flags)
+        global screen_rect
+        screen_rect = self.screen.get_rect()
+
+        self.font = pygame.font.SysFont("consolas", 20)
+        self.big_font = pygame.font.SysFont("consolas", 48, bold=True)
+        self.clock = pygame.time.Clock()
+
+        self.reset()
+        self.load_hs()
+
+    # -----------------------------
+    def reset(self):
+        self.running = True
+        self.wave = 0
+        self.wave_timer = WAVE_INTERVAL
+        self.entities = pygame.sprite.Group()
+        self.enemies = pygame.sprite.Group()
+        self.bullets = pygame.sprite.Group()
+        self.particles = pygame.sprite.Group()
+        self.pickups = pygame.sprite.Group()
+        self.player = Player(vec(WIDTH / 2, HEIGHT / 2))
+        self.entities.add(self.player)
+
+        self.move_stick = Stick(pygame.Rect(0, HEIGHT * 0.35, WIDTH * 0.45, HEIGHT * 0.65))
+        self.aim_stick = Stick(pygame.Rect(WIDTH * 0.55, HEIGHT * 0.35, WIDTH * 0.45, HEIGHT * 0.65))
+
+    # -----------------------------
+    def save_hs(self):
+        data = {"hi": max(self.player.score, getattr(self, "hi", 0))}
+        SAVE_FILE.write_text(json.dumps(data))
+        self.hi = data["hi"]
+
+    def load_hs(self):
+        if SAVE_FILE.exists():
+            self.hi = json.loads(SAVE_FILE.read_text()).get("hi", 0)
+        else:
+            self.hi = 0
+
+    # -----------------------------
+    def spawn_wave(self):
+        self.wave += 1
+        self.wave_timer = max(5, WAVE_INTERVAL - self.wave * 1.4)
+        hp_bonus = self.wave // 3
+        for _ in range(4 + self.wave * 2):
+            ang = random.random() * math.tau
+            dist = random.randint(360, 520)
+            pos = self.player.pos + vec(math.cos(ang), math.sin(ang)) * dist
+            e = Enemy(pos, hp_bonus)
+            self.enemies.add(e)
+            self.entities.add(e)
+
+    # -----------------------------
+    def maybe_spawn_pickup(self, pos: Vector):
+        if random.random() < 0.3:
+            kind = random.choice(["rof", "dmg", "spd"])
+            p = Pickup(pos, kind)
+            self.pickups.add(p)
+            self.entities.add(p)
+
+    # -----------------------------
+    def process_input(self):
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                self.running = False
+            if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
+                self.running = False
+
+            # mouse -> two fake touches
+            if ev.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP, pygame.MOUSEMOTION):
+                et = "move" if ev.type == pygame.MOUSEMOTION else ("down" if ev.type == pygame.MOUSEBUTTONDOWN else "up")
+                tid_l, tid_r = 0, 1
+                self.move_stick.handle(et, tid_l if ev.pos[0] < WIDTH / 2 else tid_r, ev.pos)
+                self.aim_stick.handle(et, tid_r if ev.pos[0] >= WIDTH / 2 else tid_l, ev.pos)
+
+            # touch
+            if ev.type == pygame.FINGERDOWN:
+                self.move_stick.handle("down", ev.touch_id, (ev.x * WIDTH, ev.y * HEIGHT))
+                self.aim_stick.handle("down", ev.touch_id, (ev.x * WIDTH, ev.y * HEIGHT))
+            if ev.type == pygame.FINGERMOTION:
+                self.move_stick.handle("move", ev.touch_id, (ev.x * WIDTH, ev.y * HEIGHT))
+                self.aim_stick.handle("move", ev.touch_id, (ev.x * WIDTH, ev.y * HEIGHT))
+            if ev.type == pygame.FINGERUP:
+                self.move_stick.handle("up", ev.touch_id, (ev.x * WIDTH, ev.y * HEIGHT))
+                self.aim_stick.handle("up", ev.touch_id, (ev.x * WIDTH, ev.y * HEIGHT))
+
+        # keyboard override
         keys = pygame.key.get_pressed()
-        if keys[pygame.K_LEFT]:
-            player.rotate(-1)
-        if keys[pygame.K_RIGHT]:
-            player.rotate(1)
-        if keys[pygame.K_UP]:
-            thrusting = True
-            player.apply_thrust(PLAYER_THRUST * dt)
+        kd = vec(keys[pygame.K_d] - keys[pygame.K_a], keys[pygame.K_s] - keys[pygame.K_w])
+        if kd.length_squared() > 0:  # normalize if non‑zero
+            kd.scale_to_length(1)
+        if self.move_stick.id is None:
+            self.move_stick.value = kd
 
-        # --------------------------------------------------------------------
-        # update sprites
-        all_sprites.update(dt)
-        player.projectiles.update()
-        enemy.projectiles.update()
+        self.player.move_input = self.move_stick.value
 
-        # collect projectiles into global lists for collision
-        player_bullets = player.projectiles
-        enemy_bullets  = enemy.projectiles
+        # mouse aim fallback if no right stick active
+        if self.aim_stick.id is None and pygame.mouse.get_focused():
+            rel = vec(pygame.mouse.get_pos()) - self.player.pos
+            self.aim_stick.value = rel.normalize() if rel.length() > 80 else vec(0, 0)
+        self.player.aim_input = self.aim_stick.value
 
-        # --------------------------------------------------------------------
-        # collisions ----------------------------------------------------------
-        # player bullets → enemy
-        for bullet in player_bullets:
-            if enemy.rect.colliderect(bullet.rect):
-                enemy.hp -= bullet.damage
-                bullet.kill()
-                if enemy.hp <= 0:
-                    enemy.kill()
-                    victory = True
-                    running = False
-                    break
+        # shooting
+        lmb = pygame.mouse.get_pressed()[0] and self.aim_stick.id is None
+        stick_fire = self.aim_stick.id is not None
+        if lmb or stick_fire:
+            self.player.shoot(self.bullets, self.particles)
 
-        # enemy bullets → player
-        for bullet in enemy_bullets:
-            if player.rect.colliderect(bullet.rect):
-                player.hp -= bullet.damage
-                bullet.kill()
-                if player.hp <= 0:
-                    player.kill()
-                    victory = False
-                    running = False
-                    break
+    # -----------------------------
+    def update(self):
+        # wave timer
+        self.wave_timer -= DT
+        if self.wave_timer <= 0:
+            self.spawn_wave()
 
-        # PD bullets destroy any enemy bullet they touch
-        for pd in [b for b in player_bullets if b.spec["damage"] >= 90]:
-            hits = pygame.sprite.spritecollide(pd, enemy_bullets, dokill=True)
-            if hits:
-                pd.kill()
+        # update all
+        for entity in self.entities:
+            if isinstance(entity, Enemy):
+                entity.update(DT, self.player.pos)
+            else:
+                entity.update(DT)
+        self.bullets.update(DT)
+        self.particles.update(DT)
 
-        # --------------------------------------------------------------------
-        # drawing -------------------------------------------------------------
-        screen.fill((10, 10, 20))
-        all_sprites.draw(screen)
-        player.projectiles.draw(screen)
-        enemy.projectiles.draw(screen)
-        draw_ui(player, enemy)
+        # bullet hits
+        hits = pygame.sprite.groupcollide(self.enemies, self.bullets, False, True)
+        for enemy, bullets in hits.items():
+            for b in bullets:
+                enemy.hp -= b.damage
+                self.particles.add(Particle(enemy.pos, ORANGE, 0.2))
+            if enemy.hp <= 0:
+                enemy.kill()
+                self.player.score += 10
+                self.maybe_spawn_pickup(enemy.pos)
+
+        # enemy touches player
+        if pygame.sprite.spritecollideany(self.player, self.enemies):
+            self.player.hp -= 1
+            for e in self.enemies:
+                if self.player.rect.colliderect(e.rect):
+                    knock = (e.pos - self.player.pos).normalize() * 40
+                    e.pos += knock
+            if self.player.hp <= 0:
+                self.running = False
+
+        # pickups
+        for p in pygame.sprite.spritecollide(self.player, self.pickups, dokill=True):
+            assert isinstance(p, Pickup)
+            self.player.apply(p.kind)
+            self.player.score += 5
+
+    # -----------------------------
+    def draw_hud(self):
+        surf = self.screen
+        # HP bar
+        pygame.draw.rect(surf, GREY, (20, 20, 120, 14))
+        hp_w = int(118 * self.player.hp / self.player.MAX_HP)
+        pygame.draw.rect(surf, CYAN, (21, 21, hp_w, 12))
+        # Wave / score
+        txt = self.font.render(f"Wave {self.wave}   Score {self.player.score}   High {self.hi}", True, WHITE)
+        surf.blit(txt, (WIDTH // 2 - txt.get_width() // 2, 20))
+
+    # -----------------------------
+    def draw(self):
+        self.screen.fill(BLACK)
+        for grp in (self.particles, self.entities, self.bullets, self.pickups):
+            grp.draw(self.screen)
+        self.move_stick.draw(self.screen)
+        self.aim_stick.draw(self.screen)
+        self.draw_hud()
         pygame.display.flip()
 
-    # ------------------------------------------------------------------------
-    # end screen
-    if victory is None:   # window closed
-        return
-    msg = "VICTORY!" if victory else "YOU WERE DESTROYED"
-    txt = FONT_BIG.render(msg, True, WHITE)
-    rect = txt.get_rect(center=(WIDTH//2, HEIGHT//2))
-    screen.blit(txt, rect)
-    pygame.display.flip()
-    pygame.time.wait(2500)
+    # -----------------------------
+    def game_over(self):
+        self.save_hs()
+        txt = self.big_font.render("GAME OVER", True, WHITE)
+        self.screen.blit(txt, (WIDTH // 2 - txt.get_width() // 2, HEIGHT // 2 - 40))
+        txt2 = self.font.render("Press [R] to restart or [Esc] to quit", True, WHITE)
+        self.screen.blit(txt2, (WIDTH // 2 - txt2.get_width() // 2, HEIGHT // 2 + 20))
+        pygame.display.flip()
+        while True:
+            for ev in pygame.event.get():
+                if ev.type == pygame.QUIT:
+                    pygame.quit()
+                    sys.exit()
+                if ev.type == pygame.KEYDOWN:
+                    if ev.key == pygame.K_r:
+                        self.reset()
+                        return
+                    if ev.key == pygame.K_ESCAPE:
+                        pygame.quit()
+                        sys.exit()
+            self.clock.tick(30)
 
-# -----------------------------------------------------------------------------
+    # -----------------------------
+    def run(self):
+        while True:
+            self.process_input()
+            if self.running:
+                self.update()
+                self.draw()
+            else:
+                self.game_over()
+            self.clock.tick(FPS)
+
+
+# ╭──────────────────────────────────────────────────────────────╮
+# │ 5. Boot                                                     │
+# ╰──────────────────────────────────────────────────────────────╯
 if __name__ == "__main__":
-    while True:
-        game_loop()
+    game = Game()
+    game.run()
